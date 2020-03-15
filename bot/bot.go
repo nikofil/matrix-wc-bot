@@ -2,6 +2,7 @@ package bot
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/matrix-org/gomatrix"
 )
@@ -32,12 +33,36 @@ func NewWCBot(serverURL, username, password string) (*WCBot, error) {
 	return &bot, nil
 }
 
+func (bot *WCBot) msgToRoom(roomID, msg string) error {
+	_, err := bot.client.SendMessageEvent(roomID, "m.room.message", map[string]string{"msgtype": "m.text", "body": msg})
+	return err
+}
+
+func (bot *WCBot) processMsg(evt *gomatrix.Event) {
+	room := evt.RoomID
+	if body, ok := evt.Body(); ok {
+		if strings.HasPrefix(body, "!wc ") {
+			search := strings.TrimPrefix(body, "!wc ")
+			if roomMsgs, ok := bot.roomMsgs[room]; ok {
+				fmt.Printf(" ! Looking for [%s] in room %s\n", search, room)
+				cnt := 0
+				for _, msg := range roomMsgs {
+					if strings.Contains(msg, search) {
+						cnt++
+					}
+				}
+				bot.msgToRoom(room, fmt.Sprintf("Found [%s] in this room %d times!", search, cnt))
+			} else {
+				fmt.Printf(" ! No messages found for room [%s]\n", room)
+			}
+		}
+		fmt.Printf(" + Msg [%s] in room %s\n", body, room)
+		bot.roomMsgs[room] = append(bot.roomMsgs[room], body)
+	}
+}
+
 // Run starts the bot and listens for messages
 func (bot *WCBot) Run() error {
-	bot.client.Syncer.(*gomatrix.DefaultSyncer).OnEventType("m.room.message", func(evt *gomatrix.Event) {
-		fmt.Println("got msg", evt)
-	})
-
 	joined, err := bot.client.JoinedRooms()
 	if err != nil {
 		return err
@@ -59,6 +84,9 @@ func (bot *WCBot) Run() error {
 	}
 
 	fmt.Println("Waiting for syncs")
-	// x.SendMessageEvent("!hmNFHDNUWDkHPeIyXb:localhost", "m.room.message", map[string]string{"msgtype": "m.text", "body": "HELLO!!"})
+
+	bot.client.Syncer.(*gomatrix.DefaultSyncer).OnEventType("m.room.message", func(evt *gomatrix.Event) {
+		go bot.processMsg(evt)
+	})
 	return bot.client.Sync()
 }
