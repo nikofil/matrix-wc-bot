@@ -3,6 +3,7 @@ package bot
 import (
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"strings"
 
 	"github.com/matrix-org/gomatrix"
@@ -49,6 +50,10 @@ func NewWCBot(serverURL, username, password, deviceID string) (*WCBot, error) {
 func (bot *WCBot) msgToRoom(roomID, msg string) error {
 	_, err := bot.client.SendMessageEvent(roomID, "m.room.message", map[string]string{"msgtype": "m.text", "body": msg})
 	return err
+}
+
+func (bot *WCBot) processEncrypted(evt *gomatrix.Event) {
+	fmt.Println(evt)
 }
 
 func (bot *WCBot) processMsg(evt *gomatrix.Event) {
@@ -102,49 +107,75 @@ func (bot *WCBot) Run() error {
 		go bot.processMsg(evt)
 	})
 
-	keys := bot.genDeviceKeys()
-	fmt.Println("keys", keys)
+	bot.client.Syncer.(*gomatrix.DefaultSyncer).OnEventType("m.room.encrypted", func(evt *gomatrix.Event) {
+		go bot.processEncrypted(evt)
+	})
 
-	oneTimeKeys := bot.genOneTimeKeys(5)
-	fmt.Println("otk", oneTimeKeys)
-
-	keyUploadURL := bot.client.BuildURL("keys", "upload")
-	algorithms := []string{"m.olm.v1.curve25519-aes-sha2", "m.megolm.v1.aes-sha2"}
-	resp := make(map[string]map[string]int)
-
-	dkeys := deviceKeys{
-		UserID:     bot.client.UserID,
-		DeviceID:   bot.deviceID,
-		Algorithms: algorithms,
-		Keys:       keys,
-	}
-
-	dkeysBytes, err := json.Marshal(dkeys)
-	if err != nil {
+	if err = bot.prepareKeys(); err != nil {
 		return err
 	}
-
-	signatures := map[string]map[string]string{
-		bot.client.UserID: map[string]string{"ed25519:" + bot.deviceID: bot.acc.Sign(string(dkeysBytes))},
-	}
-
-	request := uploadKeysReq{
-		DeviceKeys: dkeys,
-		// OneTimeKeys: oneTimeKeys,
-	}
-
-	fmt.Println("req keys", keys)
-	fmt.Println("req sigs", signatures)
-	fmt.Println("req algs", algorithms)
-	fmt.Println("req ids", bot.client.UserID, bot.deviceID)
-	fmt.Println("sign", bot.acc.Sign("hello world"))
-	err = bot.client.MakeRequest("POST", keyUploadURL, request, &resp)
-	if err != nil {
-		return err
-	}
-	fmt.Println("resp", resp)
 
 	return bot.client.Sync()
+}
+
+func (bot *WCBot) prepareKeys() error {
+	pickleFileName := "keys-" + bot.deviceID + ".pickle"
+	keyUploadURL := bot.client.BuildURL("keys", "upload")
+	resp := make(map[string]map[string]int)
+
+	if pickled, err := ioutil.ReadFile(pickleFileName); err == nil {
+		bot.acc = olm.AccountFromPickle("1", string(pickled))
+	} else {
+		keys := bot.genDeviceKeys()
+		fmt.Println("keys", keys)
+
+		algorithms := []string{"m.olm.v1.curve25519-aes-sha2", "m.megolm.v1.aes-sha2"}
+
+		dkeys := deviceKeys{
+			UserID:     bot.client.UserID,
+			DeviceID:   bot.deviceID,
+			Algorithms: algorithms,
+			Keys:       keys,
+		}
+
+		signatures, err := bot.signKeys(interface{}(dkeys))
+		if err != nil {
+			return err
+		}
+
+		dkeys.Signatures = signatures
+		request := uploadDeviceKeysReq{
+			DeviceKeys: dkeys,
+		}
+
+		fmt.Println("req keys", keys)
+		fmt.Println("req sigs", signatures)
+		fmt.Println("req algs", algorithms)
+		fmt.Println("req ids", bot.client.UserID, bot.deviceID)
+		err = bot.client.MakeRequest("POST", keyUploadURL, request, &resp)
+		if err != nil {
+			return err
+		}
+		fmt.Println("resp", resp)
+	}
+
+	fmt.Println("max otks", bot.acc.GetMaxNumberOfOneTimeKeys())
+
+	otkRequest := bot.genOneTimeKeys(10)
+	fmt.Println("otk", otkRequest)
+	err := bot.client.MakeRequest("POST", keyUploadURL, otkRequest, &resp)
+	if err != nil {
+		return err
+	}
+	bot.acc.MarkKeysAsPublished()
+	fmt.Println("resp", resp)
+
+	pickled := bot.acc.Pickle("1")
+	if err = ioutil.WriteFile("keys-"+bot.deviceID+".pickle", []byte(pickled), 0644); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (bot *WCBot) genDeviceKeys() map[string]string {
@@ -161,9 +192,9 @@ func (bot *WCBot) genDeviceKeys() map[string]string {
 	return keysRes
 }
 
-func (bot *WCBot) genOneTimeKeys(num int) map[string]string {
+func (bot *WCBot) genOneTimeKeys(num int) uploadOneTimeKeysReq {
 	oneTimeKeysMap := make(map[string]map[string]string)
-	resMap := make(map[string]string)
+	resMap := make(map[string]oneTimeKeysReqMap)
 
 	bot.acc.GenerateOneTimeKeys(num)
 	oneTimeKeys := bot.acc.GetOneTimeKeys()
@@ -171,8 +202,26 @@ func (bot *WCBot) genOneTimeKeys(num int) map[string]string {
 
 	for algo, keys := range oneTimeKeysMap {
 		for keyID, keyVal := range keys {
-			resMap[algo+":"+keyID] = keyVal
+			otkMap := oneTimeKeysReqMap{Key: keyVal}
+			signatures, err := bot.signKeys(interface{}(otkMap))
+			if err == nil {
+				otkMap.Signatures = signatures
+				resMap["signed_"+algo+":"+keyID] = otkMap
+			}
 		}
 	}
-	return resMap
+	return uploadOneTimeKeysReq{resMap}
+}
+
+func (bot *WCBot) signKeys(keys interface{}) (*signaturesMap, error) {
+	dkeysBytes, err := json.Marshal(keys)
+	if err != nil {
+		return nil, err
+	}
+
+	signatures := signaturesMap(map[string]map[string]string{
+		bot.client.UserID: map[string]string{"ed25519:" + bot.deviceID: bot.acc.Sign(string(dkeysBytes))},
+	})
+
+	return &signatures, nil
 }
