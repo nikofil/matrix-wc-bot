@@ -133,7 +133,7 @@ func (bot *WCBot) processMsg(evt *gomatrix.Event) {
 						cnt++
 					}
 				}
-				bot.msgToRoom(room, fmt.Sprintf("Found [%s] in this room %d times!", search, cnt))
+				fmt.Println(bot.msgToRoom(room, fmt.Sprintf("Found [%s] in this room %d times!", search, cnt)))
 			} else {
 				fmt.Printf(" ! No messages found for room [%s]\n", room)
 			}
@@ -191,7 +191,6 @@ func (bot *WCBot) prepareKeys() error {
 		bot.acc = olm.AccountFromPickle("1", string(pickled))
 	} else {
 		keys := bot.genDeviceKeys()
-		fmt.Println("keys", keys)
 
 		algorithms := []string{"m.olm.v1.curve25519-aes-sha2", "m.megolm.v1.aes-sha2"}
 
@@ -213,10 +212,8 @@ func (bot *WCBot) prepareKeys() error {
 			DeviceKeys: dkeys,
 		}
 
-		fmt.Println("req keys", keys)
-		fmt.Println("req sigs", signatures)
-		fmt.Println("req algs", algorithms)
-		fmt.Println("req ids", bot.client.UserID, bot.deviceID)
+		fmt.Println("Device keys", keys)
+		fmt.Println("Key sigs", signatures)
 
 		err = bot.client.MakeRequest("POST", keyUploadURL, request, &resp)
 		if err != nil {
@@ -285,7 +282,7 @@ func (bot *WCBot) signKeys(keys interface{}) (*signaturesMap, error) {
 		return nil, err
 	}
 
-	fmt.Println("SIGNING JSON:", string(dkeysBytes))
+	fmt.Println("Signing JSON:", string(dkeysBytes))
 
 	signatures := signaturesMap(map[string]map[string]string{
 		bot.client.UserID: map[string]string{"ed25519:" + bot.deviceID: bot.acc.Sign(string(dkeysBytes))},
