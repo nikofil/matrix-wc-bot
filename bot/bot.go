@@ -12,10 +12,12 @@ import (
 
 // WCBot stores a list of messages for each room
 type WCBot struct {
-	client   *gomatrix.Client
-	deviceID string
-	roomMsgs map[string][]string
-	acc      olm.Account
+	client    *gomatrix.Client
+	deviceID  string
+	roomMsgs  map[string][]string
+	acc       olm.Account
+	sessions  []olm.Session
+	groupSess map[string]olm.OlmGroupSession
 }
 
 // NewWCBot creates a new WCBot and logs in
@@ -30,6 +32,8 @@ func NewWCBot(serverURL, username, password, deviceID string) (*WCBot, error) {
 		deviceID,
 		make(map[string][]string),
 		olm.CreateNewAccount(),
+		make([]olm.Session, 0),
+		make(map[string]olm.OlmGroupSession),
 	}
 
 	login, err := client.Login(&gomatrix.ReqLogin{
@@ -53,7 +57,67 @@ func (bot *WCBot) msgToRoom(roomID, msg string) error {
 }
 
 func (bot *WCBot) processEncrypted(evt *gomatrix.Event) {
-	fmt.Println(evt)
+	if evt.Content["algorithm"] == "m.megolm.v1.aes-sha2" {
+		cipher := evt.Content["ciphertext"].(string)
+		sessID := evt.Content["session_id"].(string)
+		fmt.Println("New msg in sess", sessID)
+		if sess, ok := bot.groupSess[sessID]; ok {
+			decrypted := sess.DecryptGroupMsg(cipher)
+			fmt.Println("Decrypted group msg", decrypted)
+			var decryptedEvt gomatrix.Event
+			json.Unmarshal([]byte(decrypted), &decryptedEvt)
+			if decryptedEvt.Type == "m.room.message" {
+				go bot.processMsg(&decryptedEvt)
+			} else {
+				fmt.Println("unknown evt type?", decryptedEvt)
+			}
+		} else {
+			fmt.Println("!! no megolm sess found")
+		}
+	} else {
+		cipher := evt.Content["ciphertext"].(map[string]interface{})
+		for _, val := range cipher {
+			cipherVal := val.(map[string]interface{})
+			cipherType := int(cipherVal["type"].(float64))
+			senderKey := evt.Content["sender_key"].(string)
+			cipherBody := cipherVal["body"].(string)
+			// fmt.Println("olm", cipherType, senderKey)
+			procd := false
+			var decrypted string
+			for _, sess := range bot.sessions {
+				if cipherType == 0 {
+					if sess.MatchesInbound(cipherBody) {
+						decrypted = sess.Decrypt(cipherType, cipherBody)
+						procd = true
+						break
+					}
+				}
+			}
+			if !procd {
+				sess := olm.CreateInboundSessionFrom(bot.acc, senderKey, cipherBody)
+				// fmt.Println("NEW SESS!", cipherType, cipherBody)
+				decrypted = sess.Decrypt(cipherType, cipherBody)
+			}
+			resMap := make(map[string]interface{})
+			// fmt.Println("dec", decrypted)
+			json.Unmarshal([]byte(decrypted), &resMap)
+			// fmt.Println("map", resMap)
+			bot.genMegolmSession(resMap)
+		}
+	}
+}
+
+func (bot *WCBot) genMegolmSession(dec map[string]interface{}) {
+	group := olm.NewOlmGroupSession()
+	content := dec["content"].(map[string]interface{})
+	// fmt.Println("content", content)
+	key := content["session_key"].(string)
+	sessID := content["session_id"].(string)
+	// fmt.Println("Session key is", key)
+	// fmt.Println("key", key)
+	group.InitInbGroupSess(key)
+	fmt.Println("Inited group sess", sessID)
+	bot.groupSess[sessID] = group
 }
 
 func (bot *WCBot) processMsg(evt *gomatrix.Event) {
@@ -144,6 +208,7 @@ func (bot *WCBot) prepareKeys() error {
 		}
 
 		dkeys.Signatures = signatures
+		dkeys.Unsigned = &map[string]string{"device_display_name": "i am a bot actually"}
 		request := uploadDeviceKeysReq{
 			DeviceKeys: dkeys,
 		}
@@ -152,6 +217,7 @@ func (bot *WCBot) prepareKeys() error {
 		fmt.Println("req sigs", signatures)
 		fmt.Println("req algs", algorithms)
 		fmt.Println("req ids", bot.client.UserID, bot.deviceID)
+
 		err = bot.client.MakeRequest("POST", keyUploadURL, request, &resp)
 		if err != nil {
 			return err
@@ -186,7 +252,7 @@ func (bot *WCBot) genDeviceKeys() map[string]string {
 	json.Unmarshal([]byte(keys), &keysMap)
 
 	for algo, keyVal := range keysMap {
-		keysRes[bot.deviceID+":"+algo] = keyVal
+		keysRes[algo+":"+bot.deviceID] = keyVal
 	}
 
 	return keysRes
@@ -218,6 +284,8 @@ func (bot *WCBot) signKeys(keys interface{}) (*signaturesMap, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	fmt.Println("SIGNING JSON:", string(dkeysBytes))
 
 	signatures := signaturesMap(map[string]map[string]string{
 		bot.client.UserID: map[string]string{"ed25519:" + bot.deviceID: bot.acc.Sign(string(dkeysBytes))},
