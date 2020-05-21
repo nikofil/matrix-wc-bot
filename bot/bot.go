@@ -1,13 +1,10 @@
 package bot
 
 import (
-	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"strings"
 
 	"github.com/matrix-org/gomatrix"
-	"github.com/nikofil/matrix-wc-bot/bot/olm"
 )
 
 // WCBot stores a list of messages for each room
@@ -15,9 +12,6 @@ type WCBot struct {
 	client    *gomatrix.Client
 	deviceID  string
 	roomMsgs  map[string][]string
-	acc       olm.Account
-	sessions  []olm.Session
-	groupSess map[string]olm.OlmGroupSession
 }
 
 // NewWCBot creates a new WCBot and logs in
@@ -31,9 +25,6 @@ func NewWCBot(serverURL, username, password, deviceID string) (*WCBot, error) {
 		client,
 		deviceID,
 		make(map[string][]string),
-		olm.CreateNewAccount(),
-		make([]olm.Session, 0),
-		make(map[string]olm.OlmGroupSession),
 	}
 
 	login, err := client.Login(&gomatrix.ReqLogin{
@@ -54,70 +45,6 @@ func NewWCBot(serverURL, username, password, deviceID string) (*WCBot, error) {
 func (bot *WCBot) msgToRoom(roomID, msg string) error {
 	_, err := bot.client.SendMessageEvent(roomID, "m.room.message", map[string]string{"msgtype": "m.text", "body": msg})
 	return err
-}
-
-func (bot *WCBot) processEncrypted(evt *gomatrix.Event) {
-	if evt.Content["algorithm"] == "m.megolm.v1.aes-sha2" {
-		cipher := evt.Content["ciphertext"].(string)
-		sessID := evt.Content["session_id"].(string)
-		fmt.Println("New msg in sess", sessID)
-		if sess, ok := bot.groupSess[sessID]; ok {
-			decrypted := sess.DecryptGroupMsg(cipher)
-			fmt.Println("Decrypted group msg", decrypted)
-			var decryptedEvt gomatrix.Event
-			json.Unmarshal([]byte(decrypted), &decryptedEvt)
-			if decryptedEvt.Type == "m.room.message" {
-				go bot.processMsg(&decryptedEvt)
-			} else {
-				fmt.Println("unknown evt type?", decryptedEvt)
-			}
-		} else {
-			fmt.Println("!! no megolm sess found")
-		}
-	} else {
-		cipher := evt.Content["ciphertext"].(map[string]interface{})
-		for _, val := range cipher {
-			cipherVal := val.(map[string]interface{})
-			cipherType := int(cipherVal["type"].(float64))
-			senderKey := evt.Content["sender_key"].(string)
-			cipherBody := cipherVal["body"].(string)
-			// fmt.Println("olm", cipherType, senderKey)
-			procd := false
-			var decrypted string
-			for _, sess := range bot.sessions {
-				if cipherType == 0 {
-					if sess.MatchesInbound(cipherBody) {
-						decrypted = sess.Decrypt(cipherType, cipherBody)
-						procd = true
-						break
-					}
-				}
-			}
-			if !procd {
-				sess := olm.CreateInboundSessionFrom(bot.acc, senderKey, cipherBody)
-				// fmt.Println("NEW SESS!", cipherType, cipherBody)
-				decrypted = sess.Decrypt(cipherType, cipherBody)
-			}
-			resMap := make(map[string]interface{})
-			// fmt.Println("dec", decrypted)
-			json.Unmarshal([]byte(decrypted), &resMap)
-			// fmt.Println("map", resMap)
-			bot.genMegolmSession(resMap)
-		}
-	}
-}
-
-func (bot *WCBot) genMegolmSession(dec map[string]interface{}) {
-	group := olm.NewOlmGroupSession()
-	content := dec["content"].(map[string]interface{})
-	// fmt.Println("content", content)
-	key := content["session_key"].(string)
-	sessID := content["session_id"].(string)
-	// fmt.Println("Session key is", key)
-	// fmt.Println("key", key)
-	group.InitInbGroupSess(key)
-	fmt.Println("Inited group sess", sessID)
-	bot.groupSess[sessID] = group
 }
 
 func (bot *WCBot) processMsg(evt *gomatrix.Event) {
@@ -171,122 +98,5 @@ func (bot *WCBot) Run() error {
 		go bot.processMsg(evt)
 	})
 
-	bot.client.Syncer.(*gomatrix.DefaultSyncer).OnEventType("m.room.encrypted", func(evt *gomatrix.Event) {
-		go bot.processEncrypted(evt)
-	})
-
-	if err = bot.prepareKeys(); err != nil {
-		return err
-	}
-
 	return bot.client.Sync()
-}
-
-func (bot *WCBot) prepareKeys() error {
-	pickleFileName := "keys-" + bot.deviceID + ".pickle"
-	keyUploadURL := bot.client.BuildURL("keys", "upload")
-	resp := make(map[string]map[string]int)
-
-	if pickled, err := ioutil.ReadFile(pickleFileName); err == nil {
-		bot.acc = olm.AccountFromPickle("1", string(pickled))
-	} else {
-		keys := bot.genDeviceKeys()
-
-		algorithms := []string{"m.olm.v1.curve25519-aes-sha2", "m.megolm.v1.aes-sha2"}
-
-		dkeys := deviceKeys{
-			UserID:     bot.client.UserID,
-			DeviceID:   bot.deviceID,
-			Algorithms: algorithms,
-			Keys:       keys,
-		}
-
-		signatures, err := bot.signKeys(interface{}(dkeys))
-		if err != nil {
-			return err
-		}
-
-		dkeys.Signatures = signatures
-		dkeys.Unsigned = &map[string]string{"device_display_name": "i am a bot actually"}
-		request := uploadDeviceKeysReq{
-			DeviceKeys: dkeys,
-		}
-
-		fmt.Println("Device keys", keys)
-		fmt.Println("Key sigs", signatures)
-
-		err = bot.client.MakeRequest("POST", keyUploadURL, request, &resp)
-		if err != nil {
-			return err
-		}
-		fmt.Println("resp", resp)
-	}
-
-	fmt.Println("max otks", bot.acc.GetMaxNumberOfOneTimeKeys())
-
-	otkRequest := bot.genOneTimeKeys(10)
-	fmt.Println("otk", otkRequest)
-	err := bot.client.MakeRequest("POST", keyUploadURL, otkRequest, &resp)
-	if err != nil {
-		return err
-	}
-	bot.acc.MarkKeysAsPublished()
-	fmt.Println("resp", resp)
-
-	pickled := bot.acc.Pickle("1")
-	if err = ioutil.WriteFile("keys-"+bot.deviceID+".pickle", []byte(pickled), 0644); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (bot *WCBot) genDeviceKeys() map[string]string {
-	keysMap := make(map[string]string)
-	keysRes := make(map[string]string)
-
-	keys := bot.acc.GetIdentityKeys()
-	json.Unmarshal([]byte(keys), &keysMap)
-
-	for algo, keyVal := range keysMap {
-		keysRes[algo+":"+bot.deviceID] = keyVal
-	}
-
-	return keysRes
-}
-
-func (bot *WCBot) genOneTimeKeys(num int) uploadOneTimeKeysReq {
-	oneTimeKeysMap := make(map[string]map[string]string)
-	resMap := make(map[string]oneTimeKeysReqMap)
-
-	bot.acc.GenerateOneTimeKeys(num)
-	oneTimeKeys := bot.acc.GetOneTimeKeys()
-	json.Unmarshal([]byte(oneTimeKeys), &oneTimeKeysMap)
-
-	for algo, keys := range oneTimeKeysMap {
-		for keyID, keyVal := range keys {
-			otkMap := oneTimeKeysReqMap{Key: keyVal}
-			signatures, err := bot.signKeys(interface{}(otkMap))
-			if err == nil {
-				otkMap.Signatures = signatures
-				resMap["signed_"+algo+":"+keyID] = otkMap
-			}
-		}
-	}
-	return uploadOneTimeKeysReq{resMap}
-}
-
-func (bot *WCBot) signKeys(keys interface{}) (*signaturesMap, error) {
-	dkeysBytes, err := json.Marshal(keys)
-	if err != nil {
-		return nil, err
-	}
-
-	fmt.Println("Signing JSON:", string(dkeysBytes))
-
-	signatures := signaturesMap(map[string]map[string]string{
-		bot.client.UserID: map[string]string{"ed25519:" + bot.deviceID: bot.acc.Sign(string(dkeysBytes))},
-	})
-
-	return &signatures, nil
 }

@@ -2,3 +2,5 @@ github.com/NotAFile/libolm-go v0.0.0-20171028200230-2e3c7de71be2 h1:2tLECDNqa0pj
 github.com/NotAFile/libolm-go v0.0.0-20171028200230-2e3c7de71be2/go.mod h1:3QZiVlVOwV3UMPBELqNDxCaVy3xDUa2N+7Q3D/9eqkg=
 github.com/matrix-org/gomatrix v0.0.0-20200128155335-9e7906b6766d h1:Vf/EQgAfg8/CBUQv9te7UJreZ9iKKouB2gb8UIRM4jQ=
 github.com/matrix-org/gomatrix v0.0.0-20200128155335-9e7906b6766d/go.mod h1:3fxX6gUjWyI/2Bt7J1OLhpCzOfO/bB3AiX0cJtEKud0=
+github.com/matrix-org/gomatrix v0.0.0-20200501121722-e5578b12c752 h1:xYU2vdY5uh7QX4RZqeuKpmv0ffBEGYHhgu4Mmm3RVnc=
+github.com/matrix-org/gomatrix v0.0.0-20200501121722-e5578b12c752/go.mod h1:/gBX06Kw0exX1HrwmoBibFA98yBk/jxKpGVeyQbff+s=
