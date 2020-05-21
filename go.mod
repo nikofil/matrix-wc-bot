@@ -2,4 +2,6 @@ module github.com/nikofil/matrix-wc-bot
 
 go 1.14
 
-require github.com/matrix-org/gomatrix v0.0.0-20200501121722-e5578b12c752
+// replace maunium.net/go/mautrix => /mnt/d/workspace/mautrix-go
+
+require maunium.net/go/mautrix v0.4.5

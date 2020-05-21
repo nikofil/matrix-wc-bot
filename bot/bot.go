@@ -4,19 +4,21 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/matrix-org/gomatrix"
+	"maunium.net/go/mautrix"
+	"maunium.net/go/mautrix/event"
+	"maunium.net/go/mautrix/id"
 )
 
 // WCBot stores a list of messages for each room
 type WCBot struct {
-	client    *gomatrix.Client
-	deviceID  string
-	roomMsgs  map[string][]string
+	client   *mautrix.Client
+	deviceID string
+	roomMsgs map[string][]string
 }
 
 // NewWCBot creates a new WCBot and logs in
 func NewWCBot(serverURL, username, password, deviceID string) (*WCBot, error) {
-	client, err := gomatrix.NewClient(serverURL, "", "")
+	client, err := mautrix.NewClient(serverURL, "", "")
 	if err != nil {
 		return nil, err
 	}
@@ -27,11 +29,16 @@ func NewWCBot(serverURL, username, password, deviceID string) (*WCBot, error) {
 		make(map[string][]string),
 	}
 
-	login, err := client.Login(&gomatrix.ReqLogin{
-		User:     username,
+	client.Syncer = &MySyncer{*client.Syncer.(*mautrix.DefaultSyncer), bot.processMsg, true}
+
+	login, err := client.Login(&mautrix.ReqLogin{
+		Identifier: mautrix.UserIdentifier{
+			Type: "m.id.user",
+			User: username,
+		},
 		Password: password,
 		Type:     "m.login.password",
-		DeviceID: deviceID})
+		DeviceID: id.DeviceID(deviceID)})
 	if err != nil {
 		return nil, err
 	}
@@ -42,17 +49,21 @@ func NewWCBot(serverURL, username, password, deviceID string) (*WCBot, error) {
 	return &bot, nil
 }
 
-func (bot *WCBot) msgToRoom(roomID, msg string) error {
-	_, err := bot.client.SendMessageEvent(roomID, "m.room.message", map[string]string{"msgtype": "m.text", "body": msg})
+func (bot *WCBot) msgToRoom(roomID id.RoomID, msg string) error {
+	fmt.Println("sending", msg, "to", roomID)
+	_, err := bot.client.SendMessageEvent(
+		roomID,
+		event.EventMessage,
+		map[string]string{"msgtype": "m.text", "body": msg})
 	return err
 }
 
-func (bot *WCBot) processMsg(evt *gomatrix.Event) {
-	room := evt.RoomID
-	if body, ok := evt.Body(); ok {
+func (bot *WCBot) processMsg(evt *event.Event, room id.RoomID) {
+	if err := evt.Content.ParseRaw(event.EventMessage); err == nil {
+		body := evt.Content.AsMessage().Body
 		if strings.HasPrefix(body, "!wc ") {
 			search := strings.TrimPrefix(body, "!wc ")
-			if roomMsgs, ok := bot.roomMsgs[room]; ok {
+			if roomMsgs, ok := bot.roomMsgs[room.String()]; ok {
 				fmt.Printf(" ! Looking for [%s] in room %s\n", search, room)
 				cnt := 0
 				for _, msg := range roomMsgs {
@@ -66,7 +77,7 @@ func (bot *WCBot) processMsg(evt *gomatrix.Event) {
 			}
 		}
 		fmt.Printf(" + Msg [%s] in room %s\n", body, room)
-		bot.roomMsgs[room] = append(bot.roomMsgs[room], body)
+		bot.roomMsgs[room.String()] = append(bot.roomMsgs[room.String()], body)
 	}
 }
 
@@ -79,8 +90,8 @@ func (bot *WCBot) Run() error {
 	for _, room := range joined.JoinedRooms {
 		if msgs, err := bot.client.Messages(room, "", "", 'b', 1000); err == nil {
 			for _, chunk := range msgs.Chunk {
-				if body, ok := chunk.Body(); ok {
-					bot.roomMsgs[room] = append(bot.roomMsgs[room], body)
+				if body := chunk.Content.AsMessage().Body; body != "" {
+					bot.roomMsgs[room.String()] = append(bot.roomMsgs[room.String()], body)
 				}
 			}
 		} else {
@@ -93,10 +104,6 @@ func (bot *WCBot) Run() error {
 	}
 
 	fmt.Println("Waiting for syncs")
-
-	bot.client.Syncer.(*gomatrix.DefaultSyncer).OnEventType("m.room.message", func(evt *gomatrix.Event) {
-		go bot.processMsg(evt)
-	})
 
 	return bot.client.Sync()
 }
