@@ -5,15 +5,17 @@ import (
 	"strings"
 
 	"maunium.net/go/mautrix"
+	"maunium.net/go/mautrix/crypto"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 )
 
 // WCBot stores a list of messages for each room
 type WCBot struct {
-	client   *mautrix.Client
-	deviceID string
-	roomMsgs map[string][]string
+	client     *mautrix.Client
+	deviceID   string
+	roomMsgs   map[string][]string
+	cryptoMach *crypto.OlmMachine
 }
 
 // NewWCBot creates a new WCBot and logs in
@@ -23,13 +25,21 @@ func NewWCBot(serverURL, username, password, deviceID string) (*WCBot, error) {
 		return nil, err
 	}
 
+	gobStore, err := crypto.NewGobStore("cryptoStore.gob")
+	if err != nil {
+		return nil, err
+	}
+
+	roomStats := &roomCache{}
+
 	bot := WCBot{
 		client,
 		deviceID,
 		make(map[string][]string),
+		crypto.NewOlmMachine(client, cryptoLog{}, gobStore, roomStats),
 	}
 
-	client.Syncer = &MySyncer{*client.Syncer.(*mautrix.DefaultSyncer), bot.processMsg, true}
+	client.Syncer = &MySyncer{*client.Syncer.(*mautrix.DefaultSyncer), bot.processMsg, bot.client, roomStats.SetRoomState, true}
 
 	login, err := client.Login(&mautrix.ReqLogin{
 		Identifier: mautrix.UserIdentifier{
@@ -45,6 +55,8 @@ func NewWCBot(serverURL, username, password, deviceID string) (*WCBot, error) {
 	fmt.Println("Logged in as", login.UserID, ", device", login.DeviceID)
 	client.UserID = login.UserID
 	client.AccessToken = login.AccessToken
+
+	client.UploadKeys(&mautrix.ReqUploadKeys{})
 
 	return &bot, nil
 }
