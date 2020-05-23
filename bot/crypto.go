@@ -8,20 +8,20 @@ import (
 
 type cryptoLog struct{}
 
-func (_ cryptoLog) Error(message string, args ...interface{}) {
-	fmt.Printf(message, args)
+func (cryptoLog) Error(message string, args ...interface{}) {
+	fmt.Printf("[ERROR] "+message+"\n", args...)
 }
 
-func (_ cryptoLog) Warn(message string, args ...interface{}) {
-	fmt.Printf(message, args)
+func (cryptoLog) Warn(message string, args ...interface{}) {
+	fmt.Printf("[Warn] "+message+"\n", args...)
 }
 
-func (_ cryptoLog) Debug(message string, args ...interface{}) {
-	fmt.Printf(message, args)
+func (cryptoLog) Debug(message string, args ...interface{}) {
+	fmt.Printf("[debug] "+message+"\n", args...)
 }
 
-func (_ cryptoLog) Trace(message string, args ...interface{}) {
-	fmt.Printf(message, args)
+func (cryptoLog) Trace(message string, args ...interface{}) {
+	fmt.Printf("[trace] "+message+"\n", args...)
 }
 
 type roomCache struct {

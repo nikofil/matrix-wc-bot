@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"maunium.net/go/mautrix"
+	"maunium.net/go/mautrix/crypto"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 )
@@ -14,11 +15,17 @@ type MySyncer struct {
 	callback     func(*event.Event, id.RoomID)
 	client       *mautrix.Client
 	setRoomState func(map[id.RoomID][]id.UserID, map[id.RoomID]bool)
+	olmMach      *crypto.OlmMachine
 	first        bool
 }
 
 // ProcessResponse processes a /sync response
 func (s *MySyncer) ProcessResponse(res *mautrix.RespSync, since string) (err error) {
+	s.olmMach.ProcessSyncResponse(res, since)
+
+	if err := s.olmMach.CryptoStore.Flush(); err != nil {
+		fmt.Println("error saving crypto store", err)
+	}
 	if s.first {
 		roomMembers := make(map[id.RoomID][]id.UserID)
 		roomIsEnc := make(map[id.RoomID]bool)
@@ -55,6 +62,11 @@ func (s *MySyncer) ProcessResponse(res *mautrix.RespSync, since string) (err err
 	for roomID, roomData := range res.Rooms.Join {
 		for _, evt := range roomData.Timeline.Events {
 			go s.callback(evt, roomID)
+		}
+		for _, evt := range roomData.State.Events {
+			if evt.Type == event.StateMember {
+				s.olmMach.HandleMemberEvent(evt)
+			}
 		}
 	}
 	return nil

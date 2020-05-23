@@ -39,24 +39,28 @@ func NewWCBot(serverURL, username, password, deviceID string) (*WCBot, error) {
 		crypto.NewOlmMachine(client, cryptoLog{}, gobStore, roomStats),
 	}
 
-	client.Syncer = &MySyncer{*client.Syncer.(*mautrix.DefaultSyncer), bot.processMsg, bot.client, roomStats.SetRoomState, true}
-
 	login, err := client.Login(&mautrix.ReqLogin{
 		Identifier: mautrix.UserIdentifier{
 			Type: "m.id.user",
 			User: username,
 		},
-		Password: password,
-		Type:     "m.login.password",
-		DeviceID: id.DeviceID(deviceID)})
+		Password:                 password,
+		Type:                     "m.login.password",
+		DeviceID:                 id.DeviceID(deviceID),
+		InitialDeviceDisplayName: "bot dev " + deviceID})
 	if err != nil {
 		return nil, err
 	}
 	fmt.Println("Logged in as", login.UserID, ", device", login.DeviceID)
 	client.UserID = login.UserID
 	client.AccessToken = login.AccessToken
+	client.DeviceID = id.DeviceID(deviceID)
 
-	client.UploadKeys(&mautrix.ReqUploadKeys{})
+	// client.UploadKeys(&mautrix.ReqUploadKeys{})
+
+	bot.cryptoMach.Load()
+
+	client.Syncer = &MySyncer{*client.Syncer.(*mautrix.DefaultSyncer), bot.processMsg, bot.client, roomStats.SetRoomState, bot.cryptoMach, true}
 
 	return &bot, nil
 }
@@ -72,6 +76,16 @@ func (bot *WCBot) msgToRoom(roomID id.RoomID, msg string) error {
 
 func (bot *WCBot) processMsg(evt *event.Event, room id.RoomID) {
 	if err := evt.Content.ParseRaw(event.EventMessage); err == nil {
+		if evt.Type == event.EventEncrypted {
+			evt.RoomID = room
+			fmt.Println("ENC", string(evt.Content.VeryRaw), evt.Type)
+			evt.Content.ParseRaw(event.EventEncrypted)
+			evt, err = bot.cryptoMach.DecryptMegolmEvent(evt)
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
+		}
 		body := evt.Content.AsMessage().Body
 		if strings.HasPrefix(body, "!wc ") {
 			search := strings.TrimPrefix(body, "!wc ")
