@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -65,13 +66,30 @@ func NewWCBot(serverURL, username, password, deviceID string) (*WCBot, error) {
 	return &bot, nil
 }
 
-func (bot *WCBot) msgToRoom(roomID id.RoomID, msg string) error {
+func (bot *WCBot) msgToRoom(roomID id.RoomID, msg string) (err error) {
 	fmt.Println(" + Sending", msg, "to", roomID)
-	_, err := bot.client.SendMessageEvent(
-		roomID,
-		event.EventMessage,
-		map[string]string{"msgtype": "m.text", "body": msg})
-	return err
+	if bot.cryptoMach.StateStore.IsEncrypted(roomID) {
+		members := bot.cryptoMach.StateStore.(*roomCache).RoomMembers(roomID)
+		bot.cryptoMach.ShareGroupSession(roomID, members)
+		json, err := json.Marshal(map[string]string{"msgtype": "m.text", "body": msg})
+		if err != nil {
+			return err
+		}
+		content := event.Content{}
+		content.UnmarshalJSON(json)
+		content.ParseRaw(event.EventMessage)
+		enc, err := bot.cryptoMach.EncryptMegolmEvent(roomID, event.EventMessage, content)
+		if err != nil {
+			return err
+		}
+		_, err = bot.client.SendMessageEvent(roomID, event.EventEncrypted, enc)
+	} else {
+		_, err = bot.client.SendMessageEvent(
+			roomID,
+			event.EventMessage,
+			map[string]string{"msgtype": "m.text", "body": msg})
+	}
+	return
 }
 
 func (bot *WCBot) processMsg(evt *event.Event, room id.RoomID) {

@@ -40,6 +40,7 @@ func (rc *roomCache) IsEncrypted(rid id.RoomID) bool {
 	}
 	return false
 }
+
 func (rc *roomCache) FindSharedRooms(uid id.UserID) []id.RoomID {
 	rooms := make([]id.RoomID, 0)
 	for rid, membs := range rc.roomMembers {
@@ -51,4 +52,8 @@ func (rc *roomCache) FindSharedRooms(uid id.UserID) []id.RoomID {
 		}
 	}
 	return rooms
+}
+
+func (rc *roomCache) RoomMembers(rid id.RoomID) []id.UserID {
+	return rc.roomMembers[rid]
 }
