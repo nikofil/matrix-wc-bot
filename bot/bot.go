@@ -66,7 +66,7 @@ func NewWCBot(serverURL, username, password, deviceID string) (*WCBot, error) {
 }
 
 func (bot *WCBot) msgToRoom(roomID id.RoomID, msg string) error {
-	fmt.Println("sending", msg, "to", roomID)
+	fmt.Println(" + Sending", msg, "to", roomID)
 	_, err := bot.client.SendMessageEvent(
 		roomID,
 		event.EventMessage,
@@ -78,7 +78,6 @@ func (bot *WCBot) processMsg(evt *event.Event, room id.RoomID) {
 	if err := evt.Content.ParseRaw(event.EventMessage); err == nil {
 		if evt.Type == event.EventEncrypted {
 			evt.RoomID = room
-			fmt.Println("ENC", string(evt.Content.VeryRaw), evt.Type)
 			evt.Content.ParseRaw(event.EventEncrypted)
 			evt, err = bot.cryptoMach.DecryptMegolmEvent(evt)
 			if err != nil {
@@ -102,7 +101,7 @@ func (bot *WCBot) processMsg(evt *event.Event, room id.RoomID) {
 				fmt.Printf(" ! No messages found for room [%s]\n", room)
 			}
 		}
-		fmt.Printf(" + Msg [%s] in room %s\n", body, room)
+		fmt.Printf(" + New msg [%s] in room %s\n", body, room)
 		bot.roomMsgs[room.String()] = append(bot.roomMsgs[room.String()], body)
 	}
 }
@@ -116,7 +115,17 @@ func (bot *WCBot) Run() error {
 	for _, room := range joined.JoinedRooms {
 		if msgs, err := bot.client.Messages(room, "", "", 'b', 1000); err == nil {
 			for _, chunk := range msgs.Chunk {
+				if chunk.Type == event.EventEncrypted {
+					var err error
+					chunk.Content.ParseRaw(event.EventEncrypted)
+					chunk, err = bot.cryptoMach.DecryptMegolmEvent(chunk)
+					if err != nil {
+						fmt.Println("Error decrypting msg:", err)
+						continue
+					}
+				}
 				if body := chunk.Content.AsMessage().Body; body != "" {
+					fmt.Printf(" + Read existing msg [%s]\n", body)
 					bot.roomMsgs[room.String()] = append(bot.roomMsgs[room.String()], body)
 				}
 			}
